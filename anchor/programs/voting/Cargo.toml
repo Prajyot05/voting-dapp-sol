@@ -1,12 +1,12 @@
 [package]
-name = "vault"
+name = "voting"
 version = "0.1.0"
-description = "A simple SOL vault program"
+description = "A SOL voting program"
 edition = "2021"
 
 [lib]
 crate-type = ["cdylib", "lib"]
-name = "vault"
+name = "voting"
 
 [features]
 default = []
@@ -17,8 +17,8 @@ no-log-ix-name = []
 idl-build = ["anchor-lang/idl-build"]
 
 [dependencies]
-anchor-lang = "0.32.1"
+anchor-lang = "0.31.1"
 
 [dev-dependencies]
-litesvm = "=0.7.1"
-solana-sdk = "2.3"
+litesvm = "=0.6.1"
+solana-sdk = "~2.2"
