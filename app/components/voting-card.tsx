@@ -1,184 +1,29 @@
 "use client";
 
-import { useState, useCallback } from "react";
-import {
-  useWalletConnection,
-  useSendTransaction,
-} from "@solana/react-hooks";
-import {
-  getProgramDerivedAddress,
-  getUtf8Encoder,
-  type Address,
-} from "@solana/kit";
+import { useState, useCallback, useMemo } from "react";
+import { useWallet, useConnection } from "@solana/wallet-adapter-react";
+import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
+import { Program, AnchorProvider, BN } from "@coral-xyz/anchor";
+import { PublicKey } from "@solana/web3.js";
+import type { Voting } from "@/anchor/target/types/voting";
+const IDL = require("@/anchor/target/idl/voting.json");
 
-// Program ID from Anchor.toml / declare_id!
-const VOTING_PROGRAM_ADDRESS =
-  "DHt4nNcMmkc1BGtkxPyPJm656ScJdrcQJzPhsLURTEY3" as Address;
-const SYSTEM_PROGRAM_ADDRESS =
-  "11111111111111111111111111111111" as Address;
+const PROGRAM_ID = new PublicKey("DHt4nNcMmkc1BGtkxPyPJm656ScJdrcQJzPhsLURTEY3");
 
-// Instruction discriminators from the IDL (first 8 bytes of sha256("global:<fn>"))
-const INITIALIZE_POLL_DISC = new Uint8Array([193, 22, 99, 197, 18, 33, 115, 117]);
-const INITIALIZE_CANDIDATE_DISC = new Uint8Array([210, 107, 118, 204, 255, 97, 112, 26]);
-const VOTE_DISC = new Uint8Array([227, 110, 155, 23, 136, 126, 172, 25]);
+// ---------- RPC helper for raw account reads (used in poll lookup) ----------
 
-// ---------- Borsh encoding helpers ----------
-
-function encodeU64LE(value: bigint): Uint8Array {
-  const buf = new Uint8Array(8);
-  const view = new DataView(buf.buffer);
-  view.setBigUint64(0, value, true);
-  return buf;
-}
-
-function encodeBorshString(s: string): Uint8Array {
-  const strBytes = getUtf8Encoder().encode(s);
-  const lenBuf = new Uint8Array(4);
-  new DataView(lenBuf.buffer).setUint32(0, strBytes.length, true);
-  const result = new Uint8Array(4 + strBytes.length);
-  result.set(lenBuf);
-  result.set(strBytes, 4);
-  return result;
-}
-
-// ---------- PDA derivation ----------
-
-async function getPollPda(pollId: bigint) {
-  return getProgramDerivedAddress({
-    programAddress: VOTING_PROGRAM_ADDRESS,
-    seeds: [getUtf8Encoder().encode("poll"), encodeU64LE(pollId)],
-  });
-}
-
-async function getCandidatePda(pollId: bigint, candidateName: string) {
-  return getProgramDerivedAddress({
-    programAddress: VOTING_PROGRAM_ADDRESS,
-    seeds: [encodeU64LE(pollId), getUtf8Encoder().encode(candidateName)],
-  });
-}
-
-// ---------- Instruction data builders ----------
-
-function buildInitializePollData(
-  pollId: bigint,
-  description: string,
-  pollStart: bigint,
-  pollEnd: bigint
-): Uint8Array {
-  const parts = [
-    INITIALIZE_POLL_DISC,
-    encodeU64LE(pollId),
-    encodeBorshString(description),
-    encodeU64LE(pollStart),
-    encodeU64LE(pollEnd),
-  ];
-  const total = parts.reduce((s, p) => s + p.length, 0);
-  const buf = new Uint8Array(total);
-  let offset = 0;
-  for (const p of parts) {
-    buf.set(p, offset);
-    offset += p.length;
-  }
-  return buf;
-}
-
-function buildInitializeCandidateData(
-  candidateName: string,
-  pollId: bigint
-): Uint8Array {
-  const parts = [
-    INITIALIZE_CANDIDATE_DISC,
-    encodeBorshString(candidateName),
-    encodeU64LE(pollId),
-  ];
-  const total = parts.reduce((s, p) => s + p.length, 0);
-  const buf = new Uint8Array(total);
-  let offset = 0;
-  for (const p of parts) {
-    buf.set(p, offset);
-    offset += p.length;
-  }
-  return buf;
-}
-
-function buildVoteData(candidateName: string, pollId: bigint): Uint8Array {
-  const parts = [
-    VOTE_DISC,
-    encodeBorshString(candidateName),
-    encodeU64LE(pollId),
-  ];
-  const total = parts.reduce((s, p) => s + p.length, 0);
-  const buf = new Uint8Array(total);
-  let offset = 0;
-  for (const p of parts) {
-    buf.set(p, offset);
-    offset += p.length;
-  }
-  return buf;
-}
-
-// ---------- Account data parsing ----------
-
-function decodeLittleEndianU64(data: Uint8Array, offset: number): bigint {
-  const view = new DataView(data.buffer, data.byteOffset + offset, 8);
-  return view.getBigUint64(0, true);
-}
+const RPC_URL =
+  process.env.NEXT_PUBLIC_RPC_URL ?? "https://api.devnet.solana.com";
 
 interface PollData {
-  pollId: bigint;
+  pollId: number;
   description: string;
-  pollStart: bigint;
-  pollEnd: bigint;
-  candidateAmount: bigint;
-}
-
-function parsePollAccount(data: Uint8Array): PollData {
-  // Skip 8-byte discriminator
-  const pollId = decodeLittleEndianU64(data, 8);
-  const descLen = new DataView(data.buffer, data.byteOffset + 16, 4).getUint32(0, true);
-  const description = new TextDecoder().decode(data.slice(20, 20 + descLen));
-  const off = 20 + descLen;
-  const pollStart = decodeLittleEndianU64(data, off);
-  const pollEnd = decodeLittleEndianU64(data, off + 8);
-  const candidateAmount = decodeLittleEndianU64(data, off + 16);
-  return { pollId, description, pollStart, pollEnd, candidateAmount };
+  candidateAmount: number;
 }
 
 interface CandidateData {
   candidateName: string;
-  candidateVotes: bigint;
-}
-
-function parseCandidateAccount(data: Uint8Array): CandidateData {
-  // Skip 8-byte discriminator
-  const nameLen = new DataView(data.buffer, data.byteOffset + 8, 4).getUint32(0, true);
-  const candidateName = new TextDecoder().decode(data.slice(12, 12 + nameLen));
-  const candidateVotes = decodeLittleEndianU64(data, 12 + nameLen);
-  return { candidateName, candidateVotes };
-}
-
-// ---------- RPC helpers ----------
-
-const RPC_URL = "https://api.devnet.solana.com";
-
-async function fetchAccountData(address: string): Promise<Uint8Array | null> {
-  const res = await fetch(RPC_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "getAccountInfo",
-      params: [address, { encoding: "base64" }],
-    }),
-  });
-  const json = await res.json();
-  if (!json.result?.value?.data) return null;
-  const b64 = json.result.value.data[0];
-  const binary = atob(b64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
+  candidateVotes: number;
 }
 
 // ---------- Component ----------
@@ -186,11 +31,22 @@ async function fetchAccountData(address: string): Promise<Uint8Array | null> {
 type Tab = "create" | "candidates" | "vote";
 
 export function VotingCard() {
-  const { wallet, status } = useWalletConnection();
-  const { send, isSending } = useSendTransaction();
+  const { connection } = useConnection();
+  const wallet = useWallet();
+
+  const program = useMemo(() => {
+    if (!wallet.publicKey) return null;
+    // AnchorProvider needs a wallet with signTransaction + signAllTransactions.
+    // wallet-adapter's useWallet() satisfies this interface.
+    const provider = new AnchorProvider(connection, wallet as any, {
+      commitment: "confirmed",
+    });
+    return new Program<Voting>(IDL, provider);
+  }, [connection, wallet]);
 
   const [activeTab, setActiveTab] = useState<Tab>("create");
   const [txStatus, setTxStatus] = useState<string | null>(null);
+  const [isSending, setIsSending] = useState(false);
 
   // Create Poll form
   const [pollId, setPollId] = useState("");
@@ -211,139 +67,134 @@ export function VotingCard() {
   const [candidates, setCandidates] = useState<CandidateData[]>([]);
   const [candidateNames, setCandidateNames] = useState<string[]>([]);
 
-  const walletAddress = wallet?.account.address;
-
   // --- Create Poll ---
   const handleCreatePoll = useCallback(async () => {
-    if (!walletAddress || !pollId || !description) return;
+    if (!program || !wallet.publicKey || !pollId || !description) return;
     try {
-      setTxStatus("Creating poll...");
-      const id = BigInt(pollId);
-      const start = pollStart ? BigInt(Math.floor(new Date(pollStart).getTime() / 1000)) : 0n;
-      const end = pollEnd ? BigInt(Math.floor(new Date(pollEnd).getTime() / 1000)) : BigInt(Math.floor(Date.now() / 1000) + 86400 * 30);
-
-      const [pollPda] = await getPollPda(id);
-
-      const ix = {
-        programAddress: VOTING_PROGRAM_ADDRESS,
-        accounts: [
-          { address: walletAddress, role: 3 as const },
-          { address: pollPda, role: 1 as const },
-          { address: SYSTEM_PROGRAM_ADDRESS, role: 0 as const },
-        ],
-        data: buildInitializePollData(id, description, start, end),
-      };
-
+      setIsSending(true);
       setTxStatus("Awaiting signature...");
-      const sig = await send({ instructions: [ix] });
-      setTxStatus(`Poll created! Tx: ${sig?.slice(0, 20)}...`);
+      const id = new BN(pollId);
+      const start = pollStart
+        ? new BN(Math.floor(new Date(pollStart).getTime() / 1000))
+        : new BN(0);
+      const end = pollEnd
+        ? new BN(Math.floor(new Date(pollEnd).getTime() / 1000))
+        : new BN(Math.floor(Date.now() / 1000) + 86400 * 30);
+
+      const sig = await program.methods
+        .initializePoll(id, description, start, end)
+        .rpc();
+
+      setTxStatus(`Poll created! Tx: ${sig.slice(0, 20)}...`);
       setPollId("");
       setDescription("");
       setPollStart("");
       setPollEnd("");
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      setTxStatus(`Error: ${err instanceof Error ? err.message : "Unknown error"}`);
+      setTxStatus(`Error: ${err?.message ?? "Unknown error"}`);
+    } finally {
+      setIsSending(false);
     }
-  }, [walletAddress, pollId, description, pollStart, pollEnd, send]);
+  }, [program, wallet.publicKey, pollId, description, pollStart, pollEnd]);
 
   // --- Add Candidate ---
   const handleAddCandidate = useCallback(async () => {
-    if (!walletAddress || !candPollId || !candidateName) return;
+    if (!program || !wallet.publicKey || !candPollId || !candidateName) return;
     try {
-      setTxStatus("Adding candidate...");
-      const id = BigInt(candPollId);
-      const [pollPda] = await getPollPda(id);
-      const [candPda] = await getCandidatePda(id, candidateName);
-
-      const ix = {
-        programAddress: VOTING_PROGRAM_ADDRESS,
-        accounts: [
-          { address: walletAddress, role: 3 as const },
-          { address: pollPda, role: 1 as const },
-          { address: candPda, role: 1 as const },
-          { address: SYSTEM_PROGRAM_ADDRESS, role: 0 as const },
-        ],
-        data: buildInitializeCandidateData(candidateName, id),
-      };
-
+      setIsSending(true);
       setTxStatus("Awaiting signature...");
-      const sig = await send({ instructions: [ix] });
-      setTxStatus(`Candidate added! Tx: ${sig?.slice(0, 20)}...`);
+      const id = new BN(candPollId);
+
+      const sig = await program.methods
+        .initializeCandidate(candidateName, id)
+        .rpc();
+
+      setTxStatus(`Candidate added! Tx: ${sig.slice(0, 20)}...`);
+      setCandidateNames((prev) =>
+        prev.includes(candidateName) ? prev : [...prev, candidateName]
+      );
       setCandidateName("");
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      setTxStatus(`Error: ${err instanceof Error ? err.message : "Unknown error"}`);
+      setTxStatus(`Error: ${err?.message ?? "Unknown error"}`);
+    } finally {
+      setIsSending(false);
     }
-  }, [walletAddress, candPollId, candidateName, send]);
+  }, [program, wallet.publicKey, candPollId, candidateName]);
 
   // --- Vote ---
   const handleVote = useCallback(async () => {
-    if (!walletAddress || !votePollId || !voteCandidateName) return;
+    if (!program || !wallet.publicKey || !votePollId || !voteCandidateName)
+      return;
     try {
-      setTxStatus("Casting vote...");
-      const id = BigInt(votePollId);
-      const [pollPda] = await getPollPda(id);
-      const [candPda] = await getCandidatePda(id, voteCandidateName);
-
-      const ix = {
-        programAddress: VOTING_PROGRAM_ADDRESS,
-        accounts: [
-          { address: walletAddress, role: 0 as const },
-          { address: pollPda, role: 0 as const },
-          { address: candPda, role: 1 as const },
-        ],
-        data: buildVoteData(voteCandidateName, id),
-      };
-
+      setIsSending(true);
       setTxStatus("Awaiting signature...");
-      const sig = await send({ instructions: [ix] });
-      setTxStatus(`Vote cast! Tx: ${sig?.slice(0, 20)}...`);
-    } catch (err) {
-      console.error(err);
-      setTxStatus(`Error: ${err instanceof Error ? err.message : "Unknown error"}`);
-    }
-  }, [walletAddress, votePollId, voteCandidateName, send]);
+      const id = new BN(votePollId);
 
-  // --- Fetch poll info ---
-  const handleFetchPoll = useCallback(async (id: string) => {
-    if (!id) return;
-    try {
-      const pollIdBig = BigInt(id);
-      const [pollPda] = await getPollPda(pollIdBig);
-      const data = await fetchAccountData(pollPda.toString());
-      if (!data) {
+      const sig = await program.methods
+        .vote(voteCandidateName, id)
+        .rpc();
+
+      setTxStatus(`Vote cast! Tx: ${sig.slice(0, 20)}...`);
+      setCandidateNames((prev) =>
+        prev.includes(voteCandidateName) ? prev : [...prev, voteCandidateName]
+      );
+    } catch (err: any) {
+      console.error(err);
+      setTxStatus(`Error: ${err?.message ?? "Unknown error"}`);
+    } finally {
+      setIsSending(false);
+    }
+  }, [program, wallet.publicKey, votePollId, voteCandidateName]);
+
+  // --- Fetch poll + candidate info ---
+  const handleFetchPoll = useCallback(
+    async (id: string) => {
+      if (!program || !id) return;
+      try {
+        const pollIdBN = new BN(id);
+        const [pollPda] = PublicKey.findProgramAddressSync(
+          [Buffer.from("poll"), pollIdBN.toArrayLike(Buffer, "le", 8)],
+          PROGRAM_ID
+        );
+        const pollAcc = await program.account.poll.fetch(pollPda);
+        setPollData({
+          pollId: pollAcc.pollId.toNumber(),
+          description: pollAcc.description,
+          candidateAmount: pollAcc.candidateAmount.toNumber(),
+        });
+
+        const fetchedCandidates: CandidateData[] = [];
+        for (const name of candidateNames) {
+          try {
+            const [candPda] = PublicKey.findProgramAddressSync(
+              [
+                pollIdBN.toArrayLike(Buffer, "le", 8),
+                Buffer.from(name),
+              ],
+              PROGRAM_ID
+            );
+            const candAcc = await program.account.candidate.fetch(candPda);
+            fetchedCandidates.push({
+              candidateName: candAcc.candidateName,
+              candidateVotes: candAcc.candidateVotes.toNumber(),
+            });
+          } catch {
+            // Candidate account doesn't exist yet — skip
+          }
+        }
+        setCandidates(fetchedCandidates);
+      } catch (err) {
+        console.error(err);
         setPollData(null);
         setCandidates([]);
-        return;
       }
-      const parsed = parsePollAccount(data);
-      setPollData(parsed);
+    },
+    [program, candidateNames]
+  );
 
-      // Fetch all known candidates
-      const fetchedCandidates: CandidateData[] = [];
-      for (const name of candidateNames) {
-        const [candPda] = await getCandidatePda(pollIdBig, name);
-        const candData = await fetchAccountData(candPda.toString());
-        if (candData) {
-          fetchedCandidates.push(parseCandidateAccount(candData));
-        }
-      }
-      setCandidates(fetchedCandidates);
-    } catch {
-      setPollData(null);
-      setCandidates([]);
-    }
-  }, [candidateNames]);
-
-  // Track candidate names for lookup
-  const addCandidateNameToList = useCallback((name: string) => {
-    setCandidateNames((prev) =>
-      prev.includes(name) ? prev : [...prev, name]
-    );
-  }, []);
-
-  if (status !== "connected") {
+  if (!wallet.connected) {
     return (
       <section className="w-full max-w-3xl space-y-4 rounded-2xl border border-border-low bg-card p-6 shadow-[0_20px_80px_-50px_rgba(0,0,0,0.35)]">
         <div className="space-y-1">
@@ -352,20 +203,21 @@ export function VotingCard() {
             Connect your wallet to create polls, add candidates, and vote.
           </p>
         </div>
-        <div className="rounded-lg bg-cream/50 p-4 text-center text-sm text-muted">
-          Wallet not connected
-        </div>
+        <WalletMultiButton className="!w-full !rounded-lg !bg-foreground !text-background !text-sm !font-medium !py-2.5" />
       </section>
     );
   }
 
   return (
     <section className="w-full max-w-3xl space-y-5 rounded-2xl border border-border-low bg-card p-6 shadow-[0_20px_80px_-50px_rgba(0,0,0,0.35)]">
-      <div className="space-y-1">
-        <p className="text-lg font-semibold">Voting Program</p>
-        <p className="text-sm text-muted">
-          Create polls, register candidates, and cast your vote — all on-chain.
-        </p>
+      <div className="flex items-center justify-between">
+        <div className="space-y-1">
+          <p className="text-lg font-semibold">Voting Program</p>
+          <p className="text-sm text-muted">
+            Create polls, register candidates, and cast your vote — all on-chain.
+          </p>
+        </div>
+        <WalletMultiButton className="!rounded-lg !bg-foreground !text-background !text-sm !font-medium !py-2" />
       </div>
 
       {/* Tabs */}
@@ -383,7 +235,11 @@ export function VotingCard() {
                 : "text-muted hover:text-foreground"
             }`}
           >
-            {tab === "candidates" ? "Add Candidate" : tab === "create" ? "Create Poll" : "Vote"}
+            {tab === "candidates"
+              ? "Add Candidate"
+              : tab === "create"
+              ? "Create Poll"
+              : "Vote"}
           </button>
         ))}
       </div>
@@ -411,23 +267,27 @@ export function VotingCard() {
           />
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="mb-1 block text-xs text-muted">Start (optional)</label>
+              <label className="mb-1 block text-xs text-muted">
+                Start (optional)
+              </label>
               <input
                 type="datetime-local"
                 value={pollStart}
                 onChange={(e) => setPollStart(e.target.value)}
                 disabled={isSending}
-                className="w-full rounded-lg border border-border-low bg-card px-4 py-2.5 text-sm outline-none transition placeholder:text-muted focus:border-foreground/30 disabled:opacity-60"
+                className="w-full rounded-lg border border-border-low bg-card px-4 py-2.5 text-sm outline-none transition focus:border-foreground/30 disabled:opacity-60"
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs text-muted">End (optional)</label>
+              <label className="mb-1 block text-xs text-muted">
+                End (optional)
+              </label>
               <input
                 type="datetime-local"
                 value={pollEnd}
                 onChange={(e) => setPollEnd(e.target.value)}
                 disabled={isSending}
-                className="w-full rounded-lg border border-border-low bg-card px-4 py-2.5 text-sm outline-none transition placeholder:text-muted focus:border-foreground/30 disabled:opacity-60"
+                className="w-full rounded-lg border border-border-low bg-card px-4 py-2.5 text-sm outline-none transition focus:border-foreground/30 disabled:opacity-60"
               />
             </div>
           </div>
@@ -463,10 +323,7 @@ export function VotingCard() {
             className="w-full rounded-lg border border-border-low bg-card px-4 py-2.5 text-sm outline-none transition placeholder:text-muted focus:border-foreground/30 disabled:opacity-60"
           />
           <button
-            onClick={async () => {
-              addCandidateNameToList(candidateName);
-              await handleAddCandidate();
-            }}
+            onClick={handleAddCandidate}
             disabled={isSending || !candPollId || !candidateName}
             className="w-full rounded-lg bg-foreground px-5 py-2.5 text-sm font-medium text-background transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
           >
@@ -490,7 +347,7 @@ export function VotingCard() {
             />
             <button
               onClick={() => handleFetchPoll(votePollId)}
-              disabled={!votePollId}
+              disabled={!votePollId || !program}
               className="rounded-lg border border-border-low bg-cream px-4 py-2.5 text-sm font-medium transition hover:opacity-80 disabled:opacity-40 cursor-pointer"
             >
               Lookup
@@ -501,10 +358,10 @@ export function VotingCard() {
           {pollData && (
             <div className="rounded-xl border border-border-low bg-cream/30 p-4 space-y-2">
               <p className="text-sm font-medium">
-                Poll #{pollData.pollId.toString()}: {pollData.description}
+                Poll #{pollData.pollId}: {pollData.description}
               </p>
               <p className="text-xs text-muted">
-                Candidates registered: {pollData.candidateAmount.toString()}
+                Candidates registered: {pollData.candidateAmount}
               </p>
               {candidates.length > 0 && (
                 <div className="mt-2 space-y-1.5">
@@ -515,7 +372,8 @@ export function VotingCard() {
                     >
                       <span className="font-medium">{c.candidateName}</span>
                       <span className="tabular-nums text-muted">
-                        {c.candidateVotes.toString()} vote{c.candidateVotes !== 1n ? "s" : ""}
+                        {c.candidateVotes}{" "}
+                        {c.candidateVotes === 1 ? "vote" : "votes"}
                       </span>
                     </div>
                   ))}
@@ -533,10 +391,7 @@ export function VotingCard() {
             className="w-full rounded-lg border border-border-low bg-card px-4 py-2.5 text-sm outline-none transition placeholder:text-muted focus:border-foreground/30 disabled:opacity-60"
           />
           <button
-            onClick={async () => {
-              addCandidateNameToList(voteCandidateName);
-              await handleVote();
-            }}
+            onClick={handleVote}
             disabled={isSending || !votePollId || !voteCandidateName}
             className="w-full rounded-lg bg-foreground px-5 py-2.5 text-sm font-medium text-background transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
           >
@@ -560,3 +415,5 @@ export function VotingCard() {
     </section>
   );
 }
+
+
