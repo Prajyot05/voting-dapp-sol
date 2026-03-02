@@ -14,13 +14,17 @@
 //   - `#[instruction(...)]` to access instruction args inside account structs
 //   - Borsh serialization (automatic via `#[account]`)
 //   - `InitSpace` derive macro to auto-calculate account size
+//.  - The System Program is a built-in Solana program that ships with every validator. Its address is always 11111111111111111111111111111111.
+//     It is the only program on Solana that can:
+//     1. Create a new account (allocate space on-chain)
+//     2. Transfer SOL between accounts
 // ============================================================================
 
 use anchor_lang::prelude::*;
 
-// Include the test module only when running `cargo test`
+// Include the test module only when running `cargo test`. This is the standard Rust pattern for keeping test code out of your production binary.
 #[cfg(test)]
-mod tests;
+mod tests; // Because there is no { } body here, Rust treats this as an inline module declaration with an external file — it looks for the module's source in a file named tests.rs in the same directory.
 
 // The on-chain program ID. This must match what's in Anchor.toml and the
 // deployed keypair. `declare_id!` also creates a constant `ID` (or `crate::ID`)
@@ -109,14 +113,13 @@ pub mod voting {
 //
 // Each struct marked with `#[derive(Accounts)]` tells Anchor which accounts
 // the instruction needs, their types, constraints, and relationships.
-//
+
+/// Accounts required by the `vote` instruction.
+#[derive(Accounts)]
 // The `#[instruction(...)]` attribute lets us access instruction arguments
 // (like poll_id) inside the account validation constraints (like PDA seeds).
 // IMPORTANT: the parameter order in #[instruction(...)] must match the
 // function signature.
-
-/// Accounts required by the `vote` instruction.
-#[derive(Accounts)]
 #[instruction(candidate_name: String, poll_id: u64)]
 pub struct Vote<'info> {
     // The voter — doesn't need to be `mut` because we're not deducting SOL
@@ -169,7 +172,7 @@ pub struct InitializeCandidate<'info> {
     //   - INIT_SPACE = auto-calculated from the struct fields
     // `seeds` derive a unique PDA per (poll_id, candidate_name) pair.
     #[account(
-        init,
+        init, // When you write init in an #[account(...)] constraint, Anchor automatically generates the CPI call to the System Program on your behalf. That's why you must include system_program in the accounts struct — Anchor needs a validated reference to it to make that call.
         payer = signer,
         space = 8 + Candidate::INIT_SPACE,
         seeds = [poll_id.to_le_bytes().as_ref(), candidate_name.as_bytes()],
@@ -177,7 +180,7 @@ pub struct InitializeCandidate<'info> {
     )]
     pub candidate: Account<'info, Candidate>,
 
-    // Required by `init` — the System Program creates the account.
+    // Since we are using `init`.
     pub system_program: Program<'info, System>
 }
 
