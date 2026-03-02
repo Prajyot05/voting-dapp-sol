@@ -189,8 +189,10 @@ export function VotingCard() {
       if (!program || !id) return;
       try {
         const pollIdBN = new BN(id);
+        const pollIdBytes = pollIdBN.toArrayLike(Buffer, "le", 8);
+
         const [pollPda] = PublicKey.findProgramAddressSync(
-          [Buffer.from("poll"), pollIdBN.toArrayLike(Buffer, "le", 8)],
+          [Buffer.from("poll"), pollIdBytes],
           PROGRAM_ID
         );
         const pollAcc = await program.account.poll.fetch(pollPda);
@@ -200,33 +202,32 @@ export function VotingCard() {
           candidateAmount: pollAcc.candidateAmount.toNumber(),
         });
 
-        const fetchedCandidates: CandidateData[] = [];
-        for (const name of candidateNames) {
-          try {
-            const [candPda] = PublicKey.findProgramAddressSync(
-              [
-                pollIdBN.toArrayLike(Buffer, "le", 8),
-                Buffer.from(name),
-              ],
-              PROGRAM_ID
-            );
-            const candAcc = await program.account.candidate.fetch(candPda);
-            fetchedCandidates.push({
-              candidateName: candAcc.candidateName,
-              candidateVotes: candAcc.candidateVotes.toNumber(),
+        // Fetch every Candidate account owned by the program, then keep only
+        // the ones that belong to this poll. We verify membership by re-deriving
+        // the PDA from [poll_id_le, candidate_name] and comparing to the
+        // account's on-chain address — no extra on-chain changes needed.
+        const allCandidates = await program.account.candidate.all();
+        const pollCandidates: CandidateData[] = [];
+        for (const { publicKey, account } of allCandidates) {
+          const [expectedPda] = PublicKey.findProgramAddressSync(
+            [pollIdBytes, Buffer.from(account.candidateName)],
+            PROGRAM_ID
+          );
+          if (expectedPda.equals(publicKey)) {
+            pollCandidates.push({
+              candidateName: account.candidateName,
+              candidateVotes: account.candidateVotes.toNumber(),
             });
-          } catch {
-            // Candidate account doesn't exist yet — skip
           }
         }
-        setCandidates(fetchedCandidates);
+        setCandidates(pollCandidates);
       } catch (err) {
         console.error(err);
         setPollData(null);
         setCandidates([]);
       }
     },
-    [program, candidateNames]
+    [program]
   );
 
   if (!wallet.connected) {
