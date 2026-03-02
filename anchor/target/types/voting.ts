@@ -177,9 +177,9 @@ export type Voting = {
       "docs": [
         "Casts one vote for a candidate in a poll.",
         "",
-        "Simply increments the candidate's vote counter by 1.",
-        "Note: There's currently no check preventing the same wallet from voting",
-        "multiple times — that would require an additional \"voter receipt\" PDA.",
+        "Creates a `VoteReceipt` PDA derived from [\"receipt\", poll_id, voter_pubkey].",
+        "Because `init` is used for that account, a second vote attempt from the",
+        "same wallet on the same poll will fail — the receipt account already exists.",
         "",
         "# Arguments",
         "* `_candidate_name` — Used only in account constraints for PDA derivation",
@@ -198,6 +198,7 @@ export type Voting = {
       "accounts": [
         {
           "name": "signer",
+          "writable": true,
           "signer": true
         },
         {
@@ -235,6 +236,38 @@ export type Voting = {
               }
             ]
           }
+        },
+        {
+          "name": "voteReceipt",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  99,
+                  101,
+                  105,
+                  112,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "pollId"
+              },
+              {
+                "kind": "account",
+                "path": "signer"
+              }
+            ]
+          }
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
         }
       ],
       "args": [
@@ -274,6 +307,19 @@ export type Voting = {
         136,
         153,
         111
+      ]
+    },
+    {
+      "name": "voteReceipt",
+      "discriminator": [
+        104,
+        20,
+        204,
+        252,
+        45,
+        84,
+        37,
+        195
       ]
     }
   ],
@@ -323,6 +369,30 @@ export type Voting = {
           },
           {
             "name": "candidateAmount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "voteReceipt",
+      "docs": [
+        "A zero-data marker account proving that a wallet already voted in a poll.",
+        "",
+        "It is created (via `init`) inside the `vote` instruction and is derived",
+        "from seeds [\"receipt\", poll_id (LE-u64), voter_pubkey].",
+        "Attempting to vote a second time will fail because `init` rejects",
+        "creation of an account that already exists."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "voter",
+            "type": "pubkey"
+          },
+          {
+            "name": "pollId",
             "type": "u64"
           }
         ]

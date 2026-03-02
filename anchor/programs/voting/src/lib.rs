@@ -93,9 +93,9 @@ pub mod voting {
 
     /// Casts one vote for a candidate in a poll.
     ///
-    /// Simply increments the candidate's vote counter by 1.
-    /// Note: There's currently no check preventing the same wallet from voting
-    /// multiple times — that would require an additional "voter receipt" PDA.
+    /// Creates a `VoteReceipt` PDA derived from ["receipt", poll_id, voter_pubkey].
+    /// Because `init` is used for that account, a second vote attempt from the
+    /// same wallet on the same poll will fail — the receipt account already exists.
     ///
     /// # Arguments
     /// * `_candidate_name` — Used only in account constraints for PDA derivation
@@ -103,6 +103,11 @@ pub mod voting {
     pub fn vote(ctx: Context<Vote>, _candidate_name: String, _poll_id: u64) -> Result<()> {
         let candidate = &mut ctx.accounts.candidate;
         candidate.candidate_votes += 1;
+
+        // Record the receipt so this wallet cannot vote again on the same poll.
+        let receipt = &mut ctx.accounts.vote_receipt;
+        receipt.voter = ctx.accounts.signer.key();
+        receipt.poll_id = _poll_id;
         Ok(())
     }
 }
@@ -122,14 +127,11 @@ pub mod voting {
 // function signature.
 #[instruction(candidate_name: String, poll_id: u64)]
 pub struct Vote<'info> {
-    // The voter — doesn't need to be `mut` because we're not deducting SOL
-    // from them (no `init` happening here).
+    // The voter — `mut` because SOL is deducted to fund the receipt account.
+    #[account(mut)]
     pub signer: Signer<'info>,
 
-    // The poll account — read-only here, just used to verify the poll exists.
-    // The `seeds` constraint re-derives the PDA and checks it matches.
-    // `bump` tells Anchor to find and verify the canonical bump seed.
-    // NOTE: seeds must include b"poll" to match how InitializePoll created it.
+    // The poll account — read-only, used to verify the poll exists.
     #[account(
         seeds = [b"poll", poll_id.to_le_bytes().as_ref()],
         bump
@@ -137,13 +139,27 @@ pub struct Vote<'info> {
     pub poll: Account<'info, Poll>,
 
     // The candidate to vote for — `mut` because we increment vote count.
-    // Seeds combine poll_id + candidate_name to find the right candidate PDA.
     #[account(
         mut,
         seeds = [poll_id.to_le_bytes().as_ref(), candidate_name.as_bytes()],
         bump
     )]
-    pub candidate: Account<'info, Candidate>
+    pub candidate: Account<'info, Candidate>,
+
+    // Voter receipt — created here with `init`, so a second vote attempt from
+    // the same wallet on the same poll will fail because this account already
+    // exists. Seeds: ["receipt", poll_id (LE), voter_pubkey].
+    #[account(
+        init,
+        payer = signer,
+        space = 8 + VoteReceipt::INIT_SPACE,
+        seeds = [b"receipt", poll_id.to_le_bytes().as_ref(), signer.key().as_ref()],
+        bump
+    )]
+    pub vote_receipt: Account<'info, VoteReceipt>,
+
+    // Required because `init` makes a CPI call to the System Program.
+    pub system_program: Program<'info, System>,
 }
 
 /// Accounts required by the `initialize_candidate` instruction.
@@ -241,4 +257,18 @@ pub struct Candidate {
     #[max_len(32)]
     pub candidate_name: String,  // 4 + 32 = 36 bytes — candidate name
     pub candidate_votes: u64     // 8 bytes — total votes received
+}
+
+/// A zero-data marker account proving that a wallet already voted in a poll.
+///
+/// It is created (via `init`) inside the `vote` instruction and is derived
+/// from seeds ["receipt", poll_id (LE-u64), voter_pubkey].
+/// Attempting to vote a second time will fail because `init` rejects
+/// creation of an account that already exists.
+#[account]
+#[derive(InitSpace)]
+pub struct VoteReceipt {
+    // Storing the voter and poll lets us inspect receipts off-chain if needed.
+    pub voter: Pubkey,  // 32 bytes
+    pub poll_id: u64,  // 8 bytes
 }
