@@ -10,6 +10,41 @@ const IDL = require("@/anchor/target/idl/voting.json");
 
 const PROGRAM_ID = new PublicKey("DHt4nNcMmkc1BGtkxPyPJm656ScJdrcQJzPhsLURTEY3");
 
+// ---------- User-friendly error parsing ----------
+
+function parseAnchorError(err: any): string {
+  // User rejected the wallet popup
+  if (err?.name === "WalletSignTransactionError" || err?.message?.includes("User rejected"))
+    return "Transaction cancelled.";
+
+  const logs: string[] = err?.logs ?? [];
+  const logStr = logs.join(" ");
+
+  // System program 0x0 = account already in use (init on an existing PDA)
+  if (logStr.includes("already in use") || logStr.includes("custom program error: 0x0")) {
+    // Could be a duplicate poll, candidate, or a repeat vote
+    if (logStr.includes("receipt") || err?.message?.includes("vote"))
+      return "You have already voted in this poll.";
+    return "That account already exists. The poll or candidate was already created — try a different ID or name.";
+  }
+
+  // Anchor constraint violations surface as 0x177x codes
+  if (logStr.includes("custom program error: 0x177"))
+    return "Voting period is not active. Check the poll start/end times.";
+
+  if (logStr.includes("insufficient funds"))
+    return "Insufficient SOL. Top up your wallet on devnet (faucet.solana.com).";
+
+  if (logStr.includes("AccountNotInitialized") || logStr.includes("Account does not exist"))
+    return "Poll not found. Make sure the poll ID exists and was initialized first.";
+
+  // Generic simulation failure — log the full error but show a clean message
+  if (err?.message?.includes("Simulation failed") || err?.message?.includes("Transaction simulation failed"))
+    return "Transaction failed. Check the browser console for details.";
+
+  return err?.message ?? "An unknown error occurred.";
+}
+
 // ---------- RPC helper for raw account reads (used in poll lookup) ----------
 
 const RPC_URL =
@@ -92,7 +127,7 @@ export function VotingCard() {
       setPollEnd("");
     } catch (err: any) {
       console.error(err);
-      setTxStatus(`Error: ${err?.message ?? "Unknown error"}`);
+      setTxStatus(`Error: ${parseAnchorError(err)}`);
     } finally {
       setIsSending(false);
     }
@@ -117,7 +152,7 @@ export function VotingCard() {
       setCandidateName("");
     } catch (err: any) {
       console.error(err);
-      setTxStatus(`Error: ${err?.message ?? "Unknown error"}`);
+      setTxStatus(`Error: ${parseAnchorError(err)}`);
     } finally {
       setIsSending(false);
     }
@@ -142,7 +177,7 @@ export function VotingCard() {
       );
     } catch (err: any) {
       console.error(err);
-      setTxStatus(`Error: ${err?.message ?? "Unknown error"}`);
+      setTxStatus(`Error: ${parseAnchorError(err)}`);
     } finally {
       setIsSending(false);
     }
