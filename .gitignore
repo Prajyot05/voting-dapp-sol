@@ -43,3 +43,8 @@ next-env.d.ts
 # anchor build artifacts
 /anchor/.anchor/
 /anchor/target/
+
+# Whitelist the generated IDL and TypeScript types so Vercel can resolve them.
+# These are committed and kept in sync by running `anchor build` before pushing.
+!/anchor/target/idl/voting.json
+!/anchor/target/types/voting.ts
