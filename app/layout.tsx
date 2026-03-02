@@ -29,7 +29,7 @@ export const metadata: Metadata = {
     description:
       "A full-stack Solana dApp with an Anchor smart contract, Next.js frontend, " +
       "and Solana Actions / Blinks support — built end-to-end on devnet.",
-    url: "https://your-deployment-url.vercel.app",
+    url: "https://voting-dapp-sol.vercel.app",
     siteName: "Solana Voting dApp",
     images: [
       {
@@ -53,9 +53,12 @@ export default function RootLayout({
       <Providers>
         <body
           suppressHydrationWarning
-          className={`${inter.variable} ${geistMono.variable} antialiased`}
+          className={`${inter.variable} ${geistMono.variable} antialiased flex min-h-[80vh] flex-col`}
         >
-          {children}
+          <main className="flex-1">{children}</main>
+          <footer className="w-full border-t border-border-low bg-card/50 px-6 py-3 text-center text-sm text-muted">
+            Built by <a href="https://projo.dev/" target="_blank" rel="noopener noreferrer" className="underline hover:text-foreground">Prajyot Tayde</a>
+          </footer>
         </body>
       </Providers>
     </html>

@@ -36,7 +36,7 @@ function parseAnchorError(err: any): string {
     return "Insufficient SOL. Top up your wallet on devnet (faucet.solana.com).";
 
   if (logStr.includes("AccountNotInitialized") || logStr.includes("Account does not exist"))
-    return "Poll not found. Make sure the poll ID exists and was initialized first.";
+    return "Poll not found or invalid Candidate Name. Make sure the poll ID exists and was initialized first.";
 
   // Generic simulation failure — log the full error but show a clean message
   if (err?.message?.includes("Simulation failed") || err?.message?.includes("Transaction simulation failed"))
